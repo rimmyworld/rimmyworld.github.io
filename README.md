@@ -1,1 +1,1 @@
-# rimmyworld.github.io
+[Nami](nami.html)
