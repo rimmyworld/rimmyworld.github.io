@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Image Gallery</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #111;
+      color: #eee;
+      font-family: sans-serif;
+    }
+
+    #gallery-header {
+      padding: 16px;
+      font-size: 14px;
+      color: #888;
+      border-bottom: 1px solid #222;
+    }
+
+    /* The scroll container — full viewport height */
+    #scroll-container {
+      height: 100dvh;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+      position: relative;
+    }
+
+    /* Invisible spacer that gives the scrollbar its full height */
+    #scroll-spacer {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 1px;
+    }
+
+    /* The visible tile window — absolutely positioned, moved via transform */
+    #tile-window {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      will-change: transform;
+    }
+
+    /* ── Grid layout ── */
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(var(--cols, 2), 1fr);
+      gap: 4px;
+      padding: 4px;
+    }
+
+    .tile {
+      position: relative;
+      background: #222;
+      overflow: hidden;
+      aspect-ratio: 1 / 1;
+      border-radius: 4px;
+    }
+
+    .tile img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+      /* Native lazy load for images not yet intersecting */
+      loading: lazy;
+      decoding: async;
+      /* Fade in once loaded */
+      opacity: 0;
+      transition: opacity 0.25s ease;
+    }
+
+    .tile img.loaded {
+      opacity: 1;
+    }
+
+    .tile .index-label {
+      position: absolute;
+      bottom: 4px;
+      right: 6px;
+      font-size: 10px;
+      color: rgba(255,255,255,0.45);
+      pointer-events: none;
+    }
+
+    /* Lightbox */
+    #lightbox {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.92);
+      z-index: 999;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 12px;
+    }
+    #lightbox.open { display: flex; }
+
+    #lightbox img {
+      max-width: 95vw;
+      max-height: 85dvh;
+      object-fit: contain;
+      border-radius: 4px;
+    }
+
+    #lightbox-close {
+      position: absolute;
+      top: 14px;
+      right: 18px;
+      font-size: 28px;
+      color: #fff;
+      cursor: pointer;
+      line-height: 1;
+      background: none;
+      border: none;
+    }
+
+    #lightbox-caption {
+      color: #aaa;
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+
+<div id="gallery-header">Loading…</div>
+
+<div id="scroll-container">
+  <div id="scroll-spacer"></div>
+  <div id="tile-window">
+    <div class="grid" id="grid"></div>
+  </div>
+</div>
+
+<!-- Lightbox -->
+<div id="lightbox" role="dialog" aria-modal="true">
+  <button id="lightbox-close" aria-label="Close">×</button>
+  <img id="lightbox-img" src="" alt="">
+  <div id="lightbox-caption"></div>
+</div>
+
+<script>
+  // ============================================================
+  //  ▼▼▼  PASTE YOUR IMAGE URL LIST HERE  ▼▼▼
+  // ============================================================
+  const IMAGE_URLS = [
+    "https://img202.imagetwist.com/i/77327/gm284w7gtclx.jpg/01.jpg",
+    "https://img202.imagetwist.com/i/77327/j0nsx7n4p2at.jpg/02.jpg",
+    "https://img202.imagetwist.com/i/77327/ua0mwdpcwx9q.jpg/03.jpg",
+    "https://img166.imagetwist.com/i/77328/v4uqlv0u6a9p.jpg/04.jpg",
+    "https://img119.imagetwist.com/i/77328/s1e7ecuo59ul.jpeg/05.jpeg",
+    "https://img119.imagetwist.com/i/77328/8nnryy9ngsre.jpeg/06.jpeg",
+    "https://img69.imagetwist.com/i/77328/onzdv12rauku.jpg/07.jpg",
+    "https://img69.imagetwist.com/i/77328/h6l7kyz1xw4k.jpg/08.jpg",
+    "https://img69.imagetwist.com/i/77328/ajpb8e1m0ehd.jpg/09.jpg"
+  ];
+  // ============================================================
+  //  ▲▲▲  END OF LIST  ▲▲▲
+  // ============================================================
+
+  // ── Config ──────────────────────────────────────────────────
+  const COLS         = window.innerWidth >= 600 ? 3 : 2; // columns in grid
+  const TILE_GAP     = 4;    // px — must match CSS gap
+  const TILE_PADDING = 4;    // px — must match CSS padding
+  const BUFFER_ROWS  = 4;    // extra rows rendered above & below viewport
+  // ────────────────────────────────────────────────────────────
+
+  const scroller   = document.getElementById('scroll-container');
+  const spacer     = document.getElementById('scroll-spacer');
+  const tileWindow = document.getElementById('tile-window');
+  const grid       = document.getElementById('grid');
+  const header     = document.getElementById('gallery-header');
+
+  document.documentElement.style.setProperty('--cols', COLS);
+
+  // Derive tile size from actual grid width after layout
+  let TILE_SIZE = 0;
+  let ROW_HEIGHT = 0;
+
+  function calcTileSize() {
+    const gridW = grid.clientWidth || scroller.clientWidth - TILE_PADDING * 2;
+    TILE_SIZE   = (gridW - TILE_GAP * (COLS - 1)) / COLS;
+    ROW_HEIGHT  = TILE_SIZE + TILE_GAP;
+  }
+
+  const totalImages = IMAGE_URLS.length;
+  const totalRows   = Math.ceil(totalImages / COLS);
+
+  // ── Build a pool of reusable tile DOM nodes ──────────────────
+  // We only need (BUFFER_ROWS * 2 + visibleRows + 1) * COLS tiles alive at once.
+  // We'll create them lazily up to a cap and recycle them.
+  const POOL_ROWS = BUFFER_ROWS * 2 + Math.ceil(window.innerHeight / (ROW_HEIGHT || 180)) + 2;
+  const POOL_SIZE = POOL_ROWS * COLS;
+
+  const tilePool  = []; // all tile elements
+  const tileState = []; // which image index each tile currently shows (-1 = empty)
+
+  function createTile() {
+    const div = document.createElement('div');
+    div.className = 'tile';
+    const img = document.createElement('img');
+    img.decoding = 'async';
+    img.addEventListener('load',  () => img.classList.add('loaded'));
+    img.addEventListener('error', () => img.classList.add('loaded')); // still reveal on error
+    div.appendChild(img);
+    const lbl = document.createElement('span');
+    lbl.className = 'index-label';
+    div.appendChild(lbl);
+    div.addEventListener('click', () => openLightbox(parseInt(div.dataset.imgIndex, 10)));
+    return div;
+  }
+
+  function initPool(poolSize) {
+    for (let i = 0; i < poolSize; i++) {
+      const tile = createTile();
+      tilePool.push(tile);
+      tileState.push(-1);
+      grid.appendChild(tile);
+    }
+  }
+
+  // ── Virtual scroll core ──────────────────────────────────────
+  let lastFirstRow = -1;
+
+  function render() {
+    calcTileSize();
+
+    const scrollTop   = scroller.scrollTop;
+    const vpHeight    = scroller.clientHeight;
+    const totalHeight = totalRows * ROW_HEIGHT + TILE_PADDING * 2;
+
+    // Update spacer height so the scrollbar reflects the full content
+    spacer.style.height = totalHeight + 'px';
+
+    // Which rows are visible?
+    const firstVisibleRow = Math.max(0, Math.floor((scrollTop - TILE_PADDING) / ROW_HEIGHT));
+    const lastVisibleRow  = Math.min(totalRows - 1, Math.ceil((scrollTop + vpHeight - TILE_PADDING) / ROW_HEIGHT));
+
+    // Expand by buffer
+    const firstRow = Math.max(0, firstVisibleRow - BUFFER_ROWS);
+    const lastRow  = Math.min(totalRows - 1, lastVisibleRow + BUFFER_ROWS);
+
+    if (firstRow === lastFirstRow) return; // nothing changed
+    lastFirstRow = firstRow;
+
+    const firstImg = firstRow * COLS;
+    const lastImg  = Math.min(totalImages - 1, (lastRow + 1) * COLS - 1);
+    const count    = lastImg - firstImg + 1;
+
+    // Slide the tile window so row `firstRow` sits at the right Y position
+    const offsetY = firstRow * ROW_HEIGHT + TILE_PADDING;
+    tileWindow.style.transform = `translateY(${offsetY}px)`;
+
+    // Assign images to pool tiles
+    for (let i = 0; i < tilePool.length; i++) {
+      const tile = tilePool[i];
+      const img  = tile.querySelector('img');
+      const lbl  = tile.querySelector('.index-label');
+
+      if (i < count) {
+        const imgIndex = firstImg + i;
+        if (tileState[i] !== imgIndex) {
+          tileState[i] = imgIndex;
+          tile.dataset.imgIndex = imgIndex;
+          img.classList.remove('loaded');
+          img.src = IMAGE_URLS[imgIndex];
+          img.alt = `Image ${imgIndex + 1}`;
+          lbl.textContent = imgIndex + 1;
+        }
+        tile.style.display = '';
+      } else {
+        // Hide unused pool tiles
+        tile.style.display = 'none';
+        tileState[i] = -1;
+      }
+    }
+
+    header.textContent = `${totalImages} images · showing rows ${firstRow + 1}–${lastRow + 1} of ${totalRows}`;
+  }
+
+  // ── Lightbox ─────────────────────────────────────────────────
+  const lightbox    = document.getElementById('lightbox');
+  const lbImg       = document.getElementById('lightbox-img');
+  const lbCaption   = document.getElementById('lightbox-caption');
+  const lbClose     = document.getElementById('lightbox-close');
+
+  function openLightbox(index) {
+    if (index < 0 || index >= totalImages) return;
+    lbImg.src = IMAGE_URLS[index];
+    lbCaption.textContent = `${index + 1} / ${totalImages}`;
+    lightbox.classList.add('open');
+    document.body.style.overflow = 'hidden';
+  }
+
+  function closeLightbox() {
+    lightbox.classList.remove('open');
+    lbImg.src = '';
+    document.body.style.overflow = '';
+  }
+
+  lbClose.addEventListener('click', closeLightbox);
+  lightbox.addEventListener('click', e => { if (e.target === lightbox) closeLightbox(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeLightbox(); });
+
+  // ── Boot ─────────────────────────────────────────────────────
+  function boot() {
+    if (!IMAGE_URLS.length) {
+      header.textContent = 'No images — paste your URLs into the IMAGE_URLS array in the script.';
+      return;
+    }
+    calcTileSize();
+    const poolSize = Math.min(
+      totalImages,
+      (Math.ceil(scroller.clientHeight / ROW_HEIGHT) + BUFFER_ROWS * 2 + 1) * COLS
+    );
+    initPool(poolSize);
+    render();
+    scroller.addEventListener('scroll', render, { passive: true });
+    window.addEventListener('resize', () => { calcTileSize(); render(); });
+  }
+
+  // Wait one frame so the grid has layout before we measure it
+  requestAnimationFrame(boot);
+</script>
+</body>
+</html>
